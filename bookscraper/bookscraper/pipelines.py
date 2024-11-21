@@ -1,14 +1,6 @@
-# Define your item pipelines here
-#
-# Don't forget to add your pipeline to the ITEM_PIPELINES setting
-# See: https://docs.scrapy.org/en/latest/topics/item-pipeline.html
-
-
-# useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
 from jmespath.ast import field
 from twisted.python.compat import items
-
 
 class BookscraperPipeline:
     def process_item(self, item, spider):
@@ -70,101 +62,66 @@ class BookscraperPipeline:
         return item
 
 
-import mysql.connector
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from bookscraper.models import Book, Base  # Import your Book model
 
-class SaveToMySQLPipeline:
+class SaveToSQLitePipeline:
+
     def __init__(self):
-        self.conn = mysql.connector.connect(
-            host= 'localhost',
-            user = 'root',
-            password = 'malek',
-            database = 'books'
-        )
+        # Create the SQLite database connection using SQLAlchemy
+        self.engine = create_engine('sqlite:///books.db', echo=True)  # SQLite connection string
+        # Create all tables if they don't exist
+        Base.metadata.create_all(self.engine)
 
-        ## Create cursor, used to execute commands
-        self.cur = self.conn.cursor()
-
-        ## Create books table if none exist
-        self.cur.execute("""
-        CREATE TABLE IF NOT EXISTS books(
-            id int NOT NULL auto_increment,
-            url VARCHAR(255),
-            title text,
-            upc VARCHAR(255),
-            product_type VARCHAR(255),
-            price_excl_tax DECIMAL,
-            price_incl_tax DECIMAL,
-            tax DECIMAL,
-            availability INTEGER,
-            num_reviews INTEGER,
-            stars INTEGER,
-            category VARCHAR(255),
-            description text,
-            price DECIMAL,            
-            PRIMARY KEY (id)
-        )    
-        """)
+        # Create a sessionmaker bound to the engine
+        Session = sessionmaker(bind=self.engine)
+        self.session = Session()
 
     def process_item(self, item, spider):
+        """
+        Process each scraped item and store it in the SQLite database.
+        """
+        try:
+            description = item.get('description', '')
+            if isinstance(description, tuple) or isinstance(description, list):
+                description = ' '.join(description)
+            
+            # Create a new Book instance from the scraped item
+            book = Book(
+                url=item['url'],
+                title=item['title'],
+                upc=item['upc'],
+                product_type=item['product_type'],
+                price_excl_tax=item['price_excl_tax'],
+                price_incl_tax=item['price_incl_tax'],
+                tax=item['tax'],
+                availability=item['availability'],
+                num_reviews=item['num_reviews'],
+                stars=item['stars'],
+                category=item['category'],
+                description=description,
+                price=item['price']
+            )
+            
+            # Add the book to the session and commit the transaction
+            self.session.add(book)
+            self.session.commit()
 
-        ## Define insert statement
-        self.cur.execute(""" insert into books (
-            url,
-            title,
-            upc,
-            product_type,
-            price_excl_tax,
-            price_incl_tax,
-            tax,           
-            availability,
-            num_reviews,
-            stars,
-            category,
-            description,
-            price
-            ) values (
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s
-                )""", (
-            item["url"],
-            item["title"],
-            item["upc"],
-            item["product_type"],
-            item["price_excl_tax"],
-            item["price_incl_tax"],
-            item["tax"],
-            item["availability"],
-            item["num_reviews"],
-            item["stars"],
-            item["category"],
-            str(item["description"][0]),
-            item["price"],
-        ))
-
-        ## Execute insert of data into database
-        self.conn.commit()
-        return item
-
+            return item
+        except Exception as e:
+            # Handle exceptions (e.g., integrity errors, connection issues)
+            self.session.rollback()  # Rollback the transaction if there's an error
+            spider.logger.error(f"Error saving item to database: {e}")
+            return None
 
     def close_spider(self, spider):
-
-        ## Close cursor & connection to database
-        self.cur.close()
-        self.conn.close()
-
-
-
+        """
+        This method is called when the spider closes.
+        Ensures the session is properly closed.
+        """
+        self.session.close()
 
 
 
